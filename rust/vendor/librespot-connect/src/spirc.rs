@@ -1215,9 +1215,14 @@ impl SpircTask {
     async fn handle_disconnect(&mut self) -> Result<(), Error> {
         self.context_resolver.clear();
 
+        // Only a playing track has moved on since the last position update. A paused
+        // one must keep its position, or a pause followed by a disconnect reports a
+        // position that includes all the paused time (often past the end of the track).
+        if matches!(self.play_status, SpircPlayStatus::Playing { .. }) {
+            self.connect_state
+                .update_position_in_relation(self.now_ms());
+        }
         self.play_status = SpircPlayStatus::Stopped {};
-        self.connect_state
-            .update_position_in_relation(self.now_ms());
         self.notify().await?;
 
         self.connect_state.became_inactive(&self.session).await?;
