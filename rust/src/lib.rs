@@ -29,7 +29,7 @@ use futures::stream::StreamExt; //required for discovery.next()
 use tokio::runtime::Runtime;
 use tokio::sync::watch;
 use tokio::time::{sleep_until, Instant};
-use log::{info, error, LevelFilter};
+use log::{debug, info, error, LevelFilter};
 use android_logger::Config;
 
 /// Custom audio sink that reopens the output stream when Android's active audio
@@ -743,9 +743,19 @@ async fn consume_player_events(session: Session, mut event_channel: PlayerEventC
                     "Session idle for {}s; releasing it and returning the receiver to idle",
                     IDLE_SESSION_TIMEOUT.as_secs()
                 );
-                // Invalidate the session so spirc_task ends; the discovery loop's
-                // session-ended arm then tears down and notifies Android (-> idle).
-                session.shutdown();
+                // Shut Spirc down so it disconnects from the Connect cloud before closing
+                // the session; spirc_task then ends and the discovery loop's
+                // session-ended arm tears down and notifies Android (-> idle).
+                // Invalidating the session underneath Spirc instead logs "unexpected
+                // shutdown" and skips the goodbye. This task is aborted on teardown, so
+                // the slot still holds this session's Spirc.
+                let spirc = spirc_slot().lock().unwrap_or_else(|poison| poison.into_inner()).take();
+                match spirc {
+                    Some(spirc) => {
+                        let _ = spirc.shutdown();
+                    }
+                    None => session.shutdown(),
+                }
                 break;
             }
         }
@@ -1227,7 +1237,7 @@ pub extern "system" fn Java_fi_qvr_spotlet_NativeBridge_setStartupVolume(
 ) {
     let raw = startup_volume_from_percent(percent);
     STARTUP_VOLUME.store(raw, Ordering::Relaxed);
-    info!("Startup volume set to {}% (raw {})", percent.clamp(0, 100), raw);
+    debug!("Startup volume set to {}% (raw {})", percent.clamp(0, 100), raw);
 }
 
 #[cfg(test)]
