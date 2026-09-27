@@ -1,18 +1,23 @@
 name: Build
 
 # Every push/PR builds the native core + APK and uploads the APK as an artifact.
-# Pushing a v* tag additionally publishes a GitHub Release with the APK attached:
-#   git tag v0.1.0 && git push origin v0.1.0
+# A push to main whose versionName (app/build.gradle.kts) has no release yet also
+# creates a draft release "vX.Y.Z" with the APK attached. Publishing the draft
+# creates the tag on the commit it was built from.
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write   # release creation on tags
+  contents: write   # draft release creation
+
+# One run per ref at a time, so two quick merges can't both create a draft.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -21,6 +26,26 @@ jobs:
       HAS_SIGNING_KEY: ${{ secrets.SIGNING_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
+
+      # A release (published or draft) or tag for this version means it has already been
+      # released or is waiting to be published; later merges then leave it alone.
+      - name: Check for a new version
+        id: version
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts)
+          [ -n "$VERSION" ] || { echo "versionName not found"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          RELEASES=$(gh release list --limit 100 --json tagName --jq '.[].tagName')
+          if grep -qx "v$VERSION" <<< "$RELEASES" \
+              || git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+            echo "v$VERSION already exists; no draft"
+          else
+            echo "v$VERSION is new; drafting a release"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -79,10 +104,11 @@ jobs:
         run: ./gradlew testDebugUnitTest assembleRelease --no-daemon
 
       - name: Stage APK
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.release == 'true' && steps.version.outputs.version || '' }}
         run: |
           mkdir -p dist
-          VERSION="${GITHUB_REF_NAME#v}"
-          [[ "$GITHUB_REF" == refs/tags/v* ]] || VERSION="$(git rev-parse --short HEAD)"
+          VERSION="${RELEASE_VERSION:-$(git rev-parse --short HEAD)}"
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
           cp "$APK" "dist/spotlet-$VERSION.apk"
           ls -la dist
@@ -92,9 +118,12 @@ jobs:
           name: spotlet-apk
           path: dist/*.apk
 
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.apk
-          generate_release_notes: true
+      # Auto-generated notes are a starting point; edit the draft, then publish it.
+      - name: Draft release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" "dist/spotlet-$VERSION.apk" \
+            --draft --target "$GITHUB_SHA" --title "Spotlet $VERSION" --generate-notes
