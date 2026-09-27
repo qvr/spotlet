@@ -65,6 +65,13 @@ librespot-discovery = { path = "vendor/librespot-discovery" }
 # connects fine from the phone (see SerafiniJose/rusty#9). Drop this once a librespot
 # release newer than 0.8.0 carries the fix.
 librespot-core = { path = "vendor/librespot-core" }
+# Patch librespot-connect so a disconnect keeps a paused track's position. In 0.8.0
+# `handle_disconnect` advances the position by all the time since the last update,
+# even while paused, so pausing and then releasing the idle session reports a
+# position that includes the paused time (usually past the end of the track) and
+# the next controller restarts the track from the beginning. Drop this once a
+# librespot release newer than 0.8.0 carries the fix.
+librespot-connect = { path = "vendor/librespot-connect" }
 
 
 # Release profile. Cargo's stock release settings left ~10.5 MB of dead weight in
