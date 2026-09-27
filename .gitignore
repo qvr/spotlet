@@ -1,0 +1,22 @@
+# Android / Gradle
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.kotlin/
+captures/
+.externalNativeBuild
+.cxx
+
+# Rust
+/rust/target/
+/rust/vendor/*/target/
+/rust/vendor/*/Cargo.lock
+
+# Native core is built by CI (or locally with cargo-ndk) — never committed
+/app/src/main/jniLibs/
+
+# Local
+.env
+.claude/

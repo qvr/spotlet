@@ -1,0 +1,89 @@
+[package]
+name = "spotlet_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# JNI for Android communication
+jni = "0.21"
+ndk-context = "0.1"
+
+# Async Runtime
+tokio = { version = "1", features = ["full"] }
+futures = "0.3" # Required for StreamExt (discovery.next)
+
+# Logging
+log = "0.4"
+android_logger = "0.13"
+
+# Librespot (0.8.0 umbrella crate). default-features disabled to drop native-tls
+# (OpenSSL — painful on Android NDK). We select rustls with compiled-in webpki roots
+# (no host cert store / no OpenSSL), the rodio audio backend (oboe on Android), and
+# the pure-Rust libmdns zeroconf discovery backend.
+librespot = { version = "0.8", default-features = false, features = [
+    "rustls-tls-webpki-roots",
+    "rodio-backend",
+    "with-libmdns",
+] }
+
+# We provide our own audio sink (see src/audio_sink.rs) instead of librespot's
+# stock rodio backend so we can reopen the output stream when Android changes the
+# active audio route (e.g. Bluetooth connect/disconnect). Pinned to the same rodio
+# (and therefore cpal) version librespot uses so the types unify into one crate.
+# cpal is reached via rodio's re-export (`rodio::cpal`), so no direct cpal dep.
+rodio = { version = "0.21", default-features = false, features = ["playback"] }
+
+# Crypto
+sha1 = "0.10"
+hex = "0.4"
+
+# Patch librespot-audio with the fix from upstream PR #1722
+# (https://github.com/librespot-org/librespot/pull/1722): fall back to the next
+# CDN URL when a fetch returns a non-206 HTTP status, not only on transport errors.
+# Spotify began handing out a broken CDN edge host (HTTP 500/530) as the first
+# candidate for some accounts ~mid-June 2026 (see librespot issues #1725/#1723);
+# without the fallback, librespot 0.8.0 skips every track. Drop this once a
+# librespot release newer than 0.8.0 includes the fix.
+[patch.crates-io]
+librespot-audio = { path = "vendor/librespot-audio" }
+
+# Patch librespot-discovery so a failed Spotify Connect handshake answers the
+# client instead of killing the connection. In 0.8.0 the zeroconf HTTP service
+# ends in `.map(Result::unwrap)`, so any `Err` out of the `addUser` handler
+# panics the hyper connection task and the controller receives ZERO bytes —
+# which a Spotify client renders as "Connecting..." forever (see SerafiniJose/rusty#9).
+# Drop this once a librespot release newer than 0.8.0 carries the fix.
+librespot-discovery = { path = "vendor/librespot-discovery" }
+# Patch librespot-core so a Spotify Connect credential is presented to login5
+# under the client id that actually minted it. In 0.8.0 the receiver offers only
+# its own platform's client id, so a credential handed over by a DESKTOP
+# controller is refused with INVALID_CREDENTIALS on an Android receiver and the
+# desktop client hangs on "Connecting..." forever, while the same account
+# connects fine from the phone (see SerafiniJose/rusty#9). Drop this once a librespot
+# release newer than 0.8.0 carries the fix.
+librespot-core = { path = "vendor/librespot-core" }
+
+
+# Release profile. Cargo's stock release settings left ~10.5 MB of dead weight in
+# the shipped APK: the cdylib kept its full static symbol table (.symtab/.strtab
+# was 6.3 MB of the 18.1 MB arm64 core), and 16 codegen units meant no
+# cross-unit inlining across the librespot/tokio/rodio stack.
+#
+# `strip = "symbols"` drops .symtab/.strtab only — the dynamic symbol table
+# (.dynsym) survives, so JNI method resolution and the libc++_shared NEEDED entry
+# are unaffected.
+#
+# `panic` is deliberately left at the default `unwind`. tokio turns a panicking
+# task into a `JoinError` rather than taking down the process, and both the
+# vendored librespot-discovery handler and the hyper connection tasks rely on a
+# panic staying contained to one connection (see the [patch.crates-io] notes
+# above). `panic = "abort"` would trade a dropped Spotify connection for an app
+# crash — a bad deal for a few hundred KB.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,29 @@
+<resources>
+    <string name="app_name">Spotlet</string>
+    <string name="channel_name">Receiver</string>
+
+    <string name="action_stop">Stop</string>
+    <string name="action_play">Play</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_next">Next</string>
+    <string name="action_previous">Previous</string>
+
+    <string name="status_stopped">Receiver is off</string>
+    <string name="status_starting">Starting…</string>
+    <string name="status_ready">Ready for Spotify Connect</string>
+    <string name="status_connected">Connected: %1$s</string>
+    <string name="status_no_native">Native core missing from this build</string>
+
+    <string name="receiver_enabled">Receiver enabled</string>
+    <string name="device_name">Device name</string>
+    <string name="apply">Apply</string>
+    <string name="quality">Streaming quality</string>
+    <string name="bitrate_96">96 kbps (low)</string>
+    <string name="bitrate_160">160 kbps (normal — lighter on very slow devices)</string>
+    <string name="bitrate_320">320 kbps (high)</string>
+    <string name="startup_volume">Volume for a new session: %1$d%%</string>
+    <string name="start_on_boot">Start on boot</string>
+    <string name="audio_focus">Duck or pause for other apps (voice assistants, announcements)</string>
+    <string name="album_art">Fetch album art for media controls</string>
+    <string name="about">Spotlet %1$s — a headless Spotify Connect receiver built on librespot.</string>
+</resources>

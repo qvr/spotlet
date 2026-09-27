@@ -1,0 +1,99 @@
+name: Build
+
+# Every push/PR builds the native core + APK and uploads the APK as an artifact.
+# Pushing a v* tag additionally publishes a GitHub Release with the APK attached:
+#   git tag v0.1.0 && git push origin v0.1.0
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # release creation on tags
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HAS_SIGNING_KEY: ${{ secrets.SIGNING_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-linux-androideabi,aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # --platform 26 is required: cpal's AAudio backend links libaaudio.so, which the NDK
+      # only ships for API >= 26 (also the app's minSdk).
+      - name: Build native core
+        working-directory: rust
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          cargo ndk -t armeabi-v7a -t arm64-v8a --platform 26 \
+            -o ../app/src/main/jniLibs build --release
+          # The core DT_NEEDEDs libc++_shared.so (see rust/build.rs); ship the NDK's copy.
+          SYSROOT="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib"
+          cp "$SYSROOT/arm-linux-androideabi/libc++_shared.so" ../app/src/main/jniLibs/armeabi-v7a/
+          cp "$SYSROOT/aarch64-linux-android/libc++_shared.so" ../app/src/main/jniLibs/arm64-v8a/
+          ls -la ../app/src/main/jniLibs/*
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # Release builds are signed with a persistent key so updates install over each other.
+      # Without the secrets (e.g. on a fork) the release APK is simply left unsigned.
+      - name: Decode signing keystore
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        if: env.HAS_SIGNING_KEY == 'true'
+        run: |
+          echo "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "SIGNING_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        env:
+          SIGNING_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Stage APK
+        run: |
+          mkdir -p dist
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF" == refs/tags/v* ]] || VERSION="$(git rev-parse --short HEAD)"
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          cp "$APK" "dist/spotlet-$VERSION.apk"
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spotlet-apk
+          path: dist/*.apk
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
+          generate_release_notes: true
