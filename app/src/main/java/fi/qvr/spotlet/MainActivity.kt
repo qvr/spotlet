@@ -86,6 +86,10 @@ class MainActivity : Activity() {
         bindSwitch(R.id.audio_focus, prefs.handleAudioFocus) { prefs.handleAudioFocus = it }
         bindSwitch(R.id.album_art, prefs.albumArt) { prefs.albumArt = it }
 
+        findViewById<Button>(R.id.open_stats).setOnClickListener {
+            startActivity(android.content.Intent(this, StatsActivity::class.java))
+        }
+
         findViewById<TextView>(R.id.about).text = getString(R.string.about, BuildConfig.VERSION_NAME)
 
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -98,14 +102,16 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        ReceiverService.statusListener = ::refreshStatus
+        ReceiverService.statusListeners += statusListener
         refreshStatus()
     }
 
     override fun onPause() {
-        ReceiverService.statusListener = null
+        ReceiverService.statusListeners -= statusListener
         super.onPause()
     }
+
+    private val statusListener: () -> Unit = { refreshStatus() }
 
     private fun refreshStatus() {
         status.text = ReceiverService.status(this)

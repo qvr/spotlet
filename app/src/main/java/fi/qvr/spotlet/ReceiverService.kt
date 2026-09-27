@@ -63,6 +63,29 @@ class ReceiverService : Service() {
 
     private var focusRequest: AudioFocusRequestCompat? = null
     private var pausedForFocus = false
+
+    private lateinit var history: PlayHistory
+    private val tracker = PlayTracker(
+        clock = SystemClock::elapsedRealtime,
+        wallClock = System::currentTimeMillis,
+        listener = object : PlayTracker.Listener {
+            override fun onCounted(play: PlayTracker.Play) {
+                historyExecutor.execute {
+                    runCatching { play.rowId = history.insert(play) }
+                        .onFailure { Log.w(TAG, "Failed to record play", it) }
+                    main.post { notifyStatus() }
+                }
+            }
+
+            override fun onFinished(play: PlayTracker.Play) {
+                val listened = play.listenedMs
+                historyExecutor.execute {
+                    runCatching { history.updateListened(play.rowId, listened) }
+                }
+            }
+        },
+    )
+    private val pollTracker = Runnable { tracker.poll(); scheduleTrackerPoll() }
     private var ducked = false
 
     private data class Track(
@@ -82,6 +105,7 @@ class ReceiverService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = Prefs(this)
+        history = PlayHistory.get(this)
         audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
 
         session = MediaSessionCompat(this, "Spotlet").apply {
@@ -97,6 +121,7 @@ class ReceiverService : Service() {
         )
 
         active = this
+        runningSince = System.currentTimeMillis()
         acquireLocks()
         if (NativeBridge.loaded) {
             NativeBridge.initAndroidContext(applicationContext, cacheDir.absolutePath)
@@ -122,7 +147,10 @@ class ReceiverService : Service() {
     }
 
     override fun onDestroy() {
+        main.removeCallbacks(pollTracker)
+        tracker.onSessionEnded()
         active = null
+        runningSince = null
         abandonFocus()
         session.isActive = false
         session.release()
@@ -196,6 +224,8 @@ class ReceiverService : Service() {
     }
 
     private fun onDisconnected() {
+        tracker.onSessionEnded()
+        scheduleTrackerPoll()
         connectedUser = null
         track = null
         artUrl = null
@@ -212,6 +242,8 @@ class ReceiverService : Service() {
     private fun onPlayback(next: Track) {
         val previous = track
         track = next
+        tracker.onEvent(next.state, next.title, next.artist, next.album, next.durationMs, connectedUser)
+        scheduleTrackerPoll()
 
         if (next.isPlaying) {
             // Playing again (possibly resumed from the controller while another app held focus):
@@ -240,6 +272,12 @@ class ReceiverService : Service() {
         session.isActive = true
         if (metadataChanged || previous?.isPlaying != next.isPlaying) updateNotification()
         notifyStatus()
+    }
+
+    /** Wakes up exactly when the current track would cross the "counted as played" threshold. */
+    private fun scheduleTrackerPoll() {
+        main.removeCallbacks(pollTracker)
+        tracker.msUntilCounted()?.let { main.postDelayed(pollTracker, it + 100) }
     }
 
     private fun buildMetadata(t: Track): MediaMetadataCompat =
@@ -469,16 +507,38 @@ class ReceiverService : Service() {
 
         private val mainHandler = Handler(Looper.getMainLooper())
 
+        /** Single thread for history writes, shared across service instances (keeps row-id ordering). */
+        private val historyExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+
         /** Single thread for native start/stop/rename, shared across service instances. */
         private val nativeExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
         /** The running instance, main-thread only. */
         private var active: ReceiverService? = null
 
-        /** Observer for the settings screen (main thread). */
-        var statusListener: (() -> Unit)? = null
+        /** Observers for the UI screens (main thread). */
+        val statusListeners = mutableSetOf<() -> Unit>()
 
         val isRunning: Boolean get() = active != null
+
+        /** Wall-clock time the running service started, or null when stopped. */
+        var runningSince: Long? = null
+            private set
+
+        /** Live receiver details for the statistics screen; null when stopped. */
+        data class Live(
+            val deviceName: String,
+            val bitrateKbps: Int,
+            val user: String?,
+            val title: String?,
+            val artist: String?,
+            val playing: Boolean,
+        )
+
+        fun live(): Live? = active?.let { svc ->
+            Live(svc.prefs.deviceName, svc.prefs.bitrateKbps, svc.connectedUser,
+                svc.track?.title, svc.track?.artist, svc.track?.isPlaying == true)
+        }
 
         /** One-line human status for the settings screen. */
         fun status(context: Context): String =
@@ -495,7 +555,7 @@ class ReceiverService : Service() {
         }
 
         private fun notifyStatus() {
-            statusListener?.invoke()
+            statusListeners.toList().forEach { it() }
         }
 
         private fun onMain(block: ReceiverService.() -> Unit) {

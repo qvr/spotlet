@@ -20,6 +20,8 @@ control what's playing.
   This can be switched off.
 - Keeps playing when the audio output changes, for example when a Bluetooth speaker connects or
   drops mid-track.
+- A statistics screen with play counts, listening time, plays per Spotify user, top artists and
+  tracks, and the recently played tracks along with who played them.
 - Starts on boot, can be renamed without dropping the connection, and streams at 96, 160 or
   320 kbps (320 by default).
 - A single settings screen built from plain Android widgets. The Kotlin part of the app is
