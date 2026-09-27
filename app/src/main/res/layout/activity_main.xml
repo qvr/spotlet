@@ -95,6 +95,14 @@
                 android:text="@string/bitrate_320" />
         </RadioGroup>
 
+        <Switch
+            android:id="@+id/link_volume"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:minHeight="48dp"
+            android:text="@string/link_volume" />
+
         <TextView
             android:id="@+id/startup_volume_label"
             style="@style/SectionLabel" />

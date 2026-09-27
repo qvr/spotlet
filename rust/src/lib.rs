@@ -10,7 +10,7 @@ use std::pin::Pin;
 
 use jni::{JNIEnv, JavaVM};
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
-use jni::sys::{jfloat, jint, jlong};
+use jni::sys::{jboolean, jfloat, jint, jlong, JNI_TRUE};
 
 //librespot imports (0.8 umbrella crate)
 use librespot::core::{Session, SessionConfig, SpotifyUri, FileId};
@@ -720,6 +720,11 @@ async fn consume_player_events(session: Session, mut event_channel: PlayerEventC
                         idle_deadline = Some(Instant::now() + IDLE_SESSION_TIMEOUT);
                         publish_track_event(&session, "UNAVAILABLE", track_id, 0, 0, &mut metadata_cache, &mut last_published).await;
                     }
+                    // Connect volume moved (controller slider, or our own setConnectVolume):
+                    // Android mirrors it onto the media volume in linked mode.
+                    PlayerEvent::VolumeChanged { volume } => {
+                        send_native_volume_changed(volume);
+                    }
                     PlayerEvent::Preloading { track_id } => {
                         if let Some(next) = resolve_cached_metadata(&session, track_id, &mut metadata_cache).await {
                             info!("Preloading possible next track: {} — {}", next.title, next.artist);
@@ -966,6 +971,27 @@ fn send_native_receiver_disconnected() {
     }
 }
 
+fn send_native_volume_changed(volume: u16) {
+    let Some(java_vm) = JAVA_VM.get() else { return };
+    let Some(service_class) = SERVICE_CLASS.get() else { return };
+    let Ok(mut env) = java_vm.attach_current_thread() else {
+        error!("Failed to attach Rust volume thread to JVM");
+        return;
+    };
+    if let Err(e) = env.call_static_method(
+        service_class,
+        "onNativeVolumeChanged",
+        "(I)V",
+        &[JValue::Int(volume as i32)],
+    ) {
+        error!("Failed to publish volume change to Android: {:?}", e);
+    }
+    if let Ok(true) = env.exception_check() {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+    }
+}
+
 fn send_native_playback_event(
     playback_state: &str,
     metadata: &TrackMetadata,
@@ -1108,6 +1134,34 @@ pub extern "system" fn Java_fi_qvr_spotlet_NativeBridge_previousTrack(
     _class: JClass,
 ) {
     dispatch_spirc("previous", |spirc| spirc.prev());
+}
+
+/// Sets the Connect volume (raw 0..=65535) of the active session, as if the controller had
+/// moved its slider; the controller's UI follows. Used to push Android volume changes
+/// (hardware keys, other apps) to Spotify in linked mode. No-op without a session.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fi_qvr_spotlet_NativeBridge_setConnectVolume(
+    _env: JNIEnv,
+    _class: JClass,
+    volume: jint,
+) {
+    let volume = volume.clamp(0, u16::MAX as jint) as u16;
+    dispatch_spirc("set_volume", |spirc| spirc.set_volume(volume));
+}
+
+/// Switches linked-volume mode: when on, the software mixer stays at full scale and the
+/// Connect volume is applied to the Android media volume instead (see duck::PASSTHROUGH).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fi_qvr_spotlet_NativeBridge_setVolumeLinked(
+    _env: JNIEnv,
+    _class: JClass,
+    linked: jboolean,
+) {
+    duck::PASSTHROUGH.store(linked == JNI_TRUE, Ordering::Relaxed);
+    if let Some(mixer) = duck_slot().lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+        mixer.reapply();
+    }
+    info!("Linked volume {}", if linked == JNI_TRUE { "on" } else { "off" });
 }
 
 /// Seeks the current track to `position_ms`. Negative input clamps to the start.

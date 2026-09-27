@@ -6,7 +6,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -127,6 +129,9 @@ class ReceiverService : Service() {
             NativeBridge.initAndroidContext(applicationContext, cacheDir.absolutePath)
             NativeBridge.initLogger()
         }
+        ContextCompat.registerReceiver(
+            this, volumeReceiver, IntentFilter(VOLUME_CHANGED_ACTION), ContextCompat.RECEIVER_EXPORTED,
+        )
         notifyStatus()
     }
 
@@ -156,6 +161,7 @@ class ReceiverService : Service() {
         session.release()
         if (NativeBridge.loaded) nativeExecutor.execute { NativeBridge.stopDevice() }
         artExecutor.shutdownNow()
+        runCatching { unregisterReceiver(volumeReceiver) }
         multicastLock?.takeIf { it.isHeld }?.release()
         wakeLock?.takeIf { it.isHeld }?.release()
         started = null
@@ -174,7 +180,9 @@ class ReceiverService : Service() {
         }
         val name = prefs.deviceName
         val bitrate = prefs.bitrateKbps
-        val volume = prefs.startupVolumePercent
+        applyVolumeMode()
+        // Linked: a new session starts at the device's current volume, so nothing jumps.
+        val volume = if (prefs.linkVolume) deviceVolumePercent() else prefs.startupVolumePercent
         val deviceId = prefs.deviceId
         val previous = started
         started = name to bitrate
@@ -227,6 +235,7 @@ class ReceiverService : Service() {
         tracker.onSessionEnded()
         scheduleTrackerPoll()
         connectedUser = null
+        lastConnectVolume = -1
         track = null
         artUrl = null
         art = null
@@ -278,6 +287,81 @@ class ReceiverService : Service() {
     private fun scheduleTrackerPoll() {
         main.removeCallbacks(pollTracker)
         tracker.msUntilCounted()?.let { main.postDelayed(pollTracker, it + 100) }
+    }
+
+    // ---- linked volume ---------------------------------------------------------------------
+    //
+    // Linked mode keeps one volume: the Connect slider sets the Android media volume (the native
+    // soft mixer stays at full scale), and Android volume changes (hardware keys, other apps)
+    // are pushed back to Spotify so the controller's slider follows. Loops are broken by
+    // comparing in Android's coarser step domain: an update that maps to the step we're already
+    // at is dropped.
+
+    /** Last Connect volume (raw 0..65535) reported by the native side; -1 when unknown. */
+    private var lastConnectVolume = -1
+    private var linkedApplied: Boolean? = null
+
+    /**
+     * Connect volumes we pushed to Spotify recently, with when. Spotify echoes each one back as a
+     * volume event, possibly after the user has pressed the key again; applying such a stale echo
+     * would bounce the device volume back a step. Echoes are recognised and swallowed instead.
+     */
+    private val sentVolumes = ArrayDeque<Pair<Int, Long>>()
+
+    private val volumeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.getIntExtra(EXTRA_VOLUME_STREAM_TYPE, -1) == AudioManager.STREAM_MUSIC) onDeviceVolumeChanged()
+        }
+    }
+
+    private fun applyVolumeMode() {
+        val linked = prefs.linkVolume
+        if (linked == linkedApplied) return
+        val wasApplied = linkedApplied != null
+        linkedApplied = linked
+        ifNative { NativeBridge.setVolumeLinked(linked) }
+        if (linked && wasApplied) {
+            // Switched on mid-run: keep the audible level where the Connect slider had it.
+            if (lastConnectVolume >= 0) applyConnectVolumeToDevice(lastConnectVolume) else onDeviceVolumeChanged(force = true)
+        }
+    }
+
+    private fun maxStep() = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+
+    private fun stepFor(raw: Int) = Math.round(raw.toDouble() * maxStep() / 65535.0).toInt()
+
+    private fun deviceVolumePercent(): Int =
+        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / maxStep()
+
+    private fun onConnectVolumeChanged(raw: Int) {
+        lastConnectVolume = raw
+        val now = SystemClock.elapsedRealtime()
+        while (sentVolumes.isNotEmpty() && now - sentVolumes.first().second > ECHO_WINDOW_MS) sentVolumes.removeFirst()
+        val echo = sentVolumes.indexOfFirst { it.first == raw }
+        if (echo >= 0) {
+            // Our own change coming back: the device is already at (or past) this value.
+            repeat(echo + 1) { sentVolumes.removeFirst() }
+            return
+        }
+        if (prefs.linkVolume) applyConnectVolumeToDevice(raw)
+    }
+
+    private fun applyConnectVolumeToDevice(raw: Int) {
+        val step = stepFor(raw)
+        if (step != audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)) {
+            runCatching { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, step, 0) }
+                .onFailure { Log.w(TAG, "Could not set media volume", it) }
+        }
+    }
+
+    private fun onDeviceVolumeChanged(force: Boolean = false) {
+        if (!prefs.linkVolume) return
+        val step = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        ifNative { NativeBridge.setStartupVolume(step * 100 / maxStep()) }
+        if (!force && lastConnectVolume >= 0 && stepFor(lastConnectVolume) == step) return
+        val raw = (step * 65535L / maxStep()).toInt()
+        sentVolumes.addLast(raw to SystemClock.elapsedRealtime())
+        ifNative { NativeBridge.setConnectVolume(raw) }
     }
 
     private fun buildMetadata(t: Track): MediaMetadataCompat =
@@ -499,6 +583,11 @@ class ReceiverService : Service() {
         private const val DUCK_FADE_MS = 300
         private const val UNDUCK_FADE_MS = 600
 
+        // Not in the public SDK, but broadcast by every Android version we run on.
+        private const val ECHO_WINDOW_MS = 3_000L
+        private const val VOLUME_CHANGED_ACTION = "android.media.VOLUME_CHANGED_ACTION"
+        private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
+
         private const val ACTION_STOP = "fi.qvr.spotlet.STOP"
         private const val ACTION_PLAY = "fi.qvr.spotlet.PLAY"
         private const val ACTION_PAUSE = "fi.qvr.spotlet.PAUSE"
@@ -569,6 +658,9 @@ class ReceiverService : Service() {
 
         @JvmStatic
         fun onNativeReceiverDisconnected() = onMain { onDisconnected() }
+
+        @JvmStatic
+        fun onNativeVolumeChanged(volume: Int) = onMain { onConnectVolumeChanged(volume) }
 
         @JvmStatic
         fun onNativePlaybackEvent(

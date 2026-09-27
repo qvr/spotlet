@@ -71,6 +71,17 @@ class MainActivity : Activity() {
         val volume = findViewById<SeekBar>(R.id.startup_volume)
         volume.progress = prefs.startupVolumePercent
         volumeLabel.text = getString(R.string.startup_volume, prefs.startupVolumePercent)
+        val updateVolumeControls = {
+            volume.isEnabled = !prefs.linkVolume
+            volumeLabel.text = if (prefs.linkVolume) getString(R.string.startup_volume_linked)
+            else getString(R.string.startup_volume, volume.progress)
+        }
+        updateVolumeControls()
+        bindSwitch(R.id.link_volume, prefs.linkVolume) {
+            prefs.linkVolume = it
+            updateVolumeControls()
+            restartIfRunning()   // applied live; no session restart
+        }
         volume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
                 volumeLabel.text = getString(R.string.startup_volume, progress)

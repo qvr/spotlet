@@ -18,6 +18,7 @@
 //! every Connect volume. Going through the mixer's own `VolumeCtrl` (rather than hard-coding the
 //! log curve) keeps this correct if librespot's default mapping ever changes.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -27,6 +28,11 @@ use librespot::playback::config::VolumeCtrl;
 use librespot::playback::mixer::mappings::MappedCtrl;
 use librespot::playback::mixer::softmixer::SoftMixer;
 use librespot::playback::mixer::{Mixer, MixerConfig, VolumeGetter};
+
+/// "Linked volume" mode: the Connect volume drives the Android media volume instead of
+/// librespot's software volume, so the soft mixer stays at full scale (only ducking still
+/// attenuates). Process-wide; toggled over JNI and applied to a live mixer via `reapply`.
+pub static PASSTHROUGH: AtomicBool = AtomicBool::new(false);
 
 /// Ramp step interval. librespot's player re-reads the soft volume per audio packet,
 /// so 25 ms steps are audibly smooth — a per-sample fade would buy nothing.
@@ -54,6 +60,7 @@ pub struct DuckingMixer {
 impl DuckingMixer {
     /// The u16 position whose audible volume is `atten` x the audible volume of `logical`.
     fn effective(&self, logical: u16, atten: f64) -> u16 {
+        let logical = if PASSTHROUGH.load(Ordering::Relaxed) { u16::MAX } else { logical };
         if atten >= 1.0 {
             return logical;
         }
@@ -102,6 +109,14 @@ impl DuckingMixer {
                 }
             }
         });
+    }
+}
+
+impl DuckingMixer {
+    /// Re-applies the current logical volume and attenuation, e.g. after `PASSTHROUGH` flips.
+    pub fn reapply(&self) {
+        let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        self.inner.set_volume(self.effective(s.logical, s.current));
     }
 }
 

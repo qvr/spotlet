@@ -33,6 +33,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_START_ON_BOOT, true)
         set(v) = sp.edit().putBoolean(KEY_START_ON_BOOT, v).apply()
 
+    /** One volume: the Spotify slider and the Android media volume move together. */
+    var linkVolume: Boolean
+        get() = sp.getBoolean(KEY_LINK_VOLUME, true)
+        set(v) = sp.edit().putBoolean(KEY_LINK_VOLUME, v).apply()
+
     /** Duck/pause for other apps (voice assistants, announcements) via Android audio focus. */
     var handleAudioFocus: Boolean
         get() = sp.getBoolean(KEY_AUDIO_FOCUS, true)
@@ -60,6 +65,7 @@ class Prefs(context: Context) {
         private const val KEY_STARTUP_VOLUME = "startup_volume"
         private const val KEY_START_ON_BOOT = "start_on_boot"
         private const val KEY_AUDIO_FOCUS = "audio_focus"
+        private const val KEY_LINK_VOLUME = "link_volume"
         private const val KEY_ALBUM_ART = "album_art"
 
         val BITRATES = listOf(96, 160, 320)

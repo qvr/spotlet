@@ -22,6 +22,9 @@ control what's playing.
   drops mid-track.
 - A statistics screen with play counts, listening time, plays per Spotify user, top artists and
   tracks, and the recently played tracks along with who played them.
+- Linked volume, on by default. The Spotify volume slider and the device's media volume are the
+  same thing, so the hardware volume buttons and other apps move the slider in Spotify too.
+  Turn it off to keep the two separate.
 - Starts on boot, can be renamed without dropping the connection, and streams at 96, 160 or
   320 kbps (320 by default).
 - A single settings screen built from plain Android widgets. The Kotlin part of the app is

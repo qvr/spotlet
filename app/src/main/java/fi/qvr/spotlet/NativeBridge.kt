@@ -46,4 +46,10 @@ object NativeBridge {
      * moving the Connect volume slider. Used for audio-focus ducking.
      */
     external fun setAttenuation(factor: Float, fadeMs: Int)
+
+    /** Linked-volume mode: Connect volume drives the Android media volume; soft mixer stays at full. */
+    external fun setVolumeLinked(linked: Boolean)
+
+    /** Sets the live session's Connect volume (raw 0..=65535); the controller's slider follows. */
+    external fun setConnectVolume(volume: Int)
 }
