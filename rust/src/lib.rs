@@ -1022,7 +1022,7 @@ fn send_native_playback_event(
     };
 
     // A null jstring is fine for every argument: the Kotlin side declares them nullable.
-    let mut jstr = |value: Option<&str>| {
+    let jstr = |value: Option<&str>| {
         value
             .and_then(|v| env.new_string(v).ok())
             .map(JObject::from)
