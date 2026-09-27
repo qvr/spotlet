@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::{env, thread};
+use std::env;
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -170,11 +170,11 @@ fn duck_slot() -> &'static Mutex<Option<Arc<DuckingMixer>>> {
 /// Synchronously shuts an existing receiver down and waits for its runtime — and
 /// therefore its mDNS responder — to fully stop before returning.
 ///
-/// Used when we are about to start a *replacement* receiver in the same process
-/// (e.g. a bitrate change). Starting a second `libmdns` responder while the old one
+/// Used for every stop, and before starting a *replacement* receiver in the same
+/// process (e.g. a bitrate change). Starting a second `libmdns` responder while the old one
 /// is still alive makes the old one's `Service::drop` panic ("responder died:
 /// SendError") and abort the process. Blocking here guarantees the old responder is
-/// gone before the new one is created. Called from the service's background start
+/// gone before the new one is created. Only ever called from the app's native-lifecycle
 /// thread, so the block is harmless.
 fn shutdown_blocking(state: ReceiverState) {
     let ReceiverState { runtime, shutdown_tx, discovery_handle, device_name, .. } = state;
@@ -187,29 +187,7 @@ fn shutdown_blocking(state: ReceiverState) {
         tokio::time::timeout(SHUTDOWN_GRACE, discovery_handle).await
     });
     runtime.shutdown_timeout(Duration::from_millis(200));
-    info!("Native receiver '{}' fully stopped before restart", device_name);
-}
-
-/// Signals an existing receiver to shut down and tears its runtime down on a
-/// detached thread, so callers (the Android service/main thread that invokes
-/// stopDevice()/onDestroy()) never block on the grace period.
-fn spawn_shutdown(state: ReceiverState) {
-    let ReceiverState { runtime, shutdown_tx, discovery_handle, device_name, .. } = state;
-    // Ask the discovery loop + active session to stop cooperatively. This makes
-    // the discovery loop drop its Discovery handle (removing the mDNS
-    // advertisement and HTTP server) and triggers spirc.shutdown()/
-    // session.shutdown() for any connected session.
-    let _ = shutdown_tx.send(true);
-    thread::spawn(move || {
-        // Let the discovery loop drop its libmdns Discovery cleanly (responder still
-        // alive) before tearing the runtime down, otherwise libmdns panics on drop.
-        // Then allow a short grace period for any remaining tasks, then force-abort.
-        let _ = runtime.block_on(async {
-            tokio::time::timeout(SHUTDOWN_GRACE, discovery_handle).await
-        });
-        runtime.shutdown_timeout(Duration::from_millis(200));
-        info!("Native receiver '{}' fully stopped", device_name);
-    });
+    info!("Native receiver '{}' fully stopped", device_name);
 }
 
 /// Derives a stable 40-char SHA-1 hex Spotify Connect device id from a persisted
@@ -1054,8 +1032,10 @@ pub extern "system" fn Java_fi_qvr_spotlet_NativeBridge_stopDevice(
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .take();
+    // Blocking on purpose: the app calls this from its single native-lifecycle thread, never
+    // the main thread, and a following startDevice must not overlap the old mDNS responder.
     match previous {
-        Some(state) => spawn_shutdown(state),
+        Some(state) => shutdown_blocking(state),
         None => info!("stopDevice: no active native receiver to stop"),
     }
 }

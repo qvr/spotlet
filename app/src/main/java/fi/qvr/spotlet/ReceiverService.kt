@@ -39,13 +39,13 @@ import java.util.concurrent.Executors
  * else that reads media sessions see it), and arbitrates Android audio focus.
  *
  * Threading: native callbacks arrive on Rust/Tokio threads and are posted to the main thread;
- * all state below is main-thread-only. Native lifecycle calls (start/stop, which may block on a
- * restart) are serialised on [nativeExecutor].
+ * all state below is main-thread-only. Native lifecycle calls (start/stop, which block while an
+ * old receiver shuts down) are serialised on the process-wide [nativeExecutor], so a stop from a
+ * dying service instance can never land after the next instance's start.
  */
 class ReceiverService : Service() {
 
     private val main = Handler(Looper.getMainLooper())
-    private val nativeExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val artExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     private lateinit var prefs: Prefs
@@ -127,7 +127,6 @@ class ReceiverService : Service() {
         session.isActive = false
         session.release()
         if (NativeBridge.loaded) nativeExecutor.execute { NativeBridge.stopDevice() }
-        nativeExecutor.shutdown()
         artExecutor.shutdownNow()
         multicastLock?.takeIf { it.isHeld }?.release()
         wakeLock?.takeIf { it.isHeld }?.release()
@@ -469,6 +468,9 @@ class ReceiverService : Service() {
         private const val ACTION_PREVIOUS = "fi.qvr.spotlet.PREVIOUS"
 
         private val mainHandler = Handler(Looper.getMainLooper())
+
+        /** Single thread for native start/stop/rename, shared across service instances. */
+        private val nativeExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
         /** The running instance, main-thread only. */
         private var active: ReceiverService? = null
