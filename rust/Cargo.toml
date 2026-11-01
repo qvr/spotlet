@@ -70,9 +70,10 @@ librespot-core = { path = "vendor/librespot-core" }
 # even while paused, so pausing and then releasing the idle session reports a
 # position that includes the paused time (usually past the end of the track) and
 # the next controller restarts the track from the beginning. Also ignore an empty
-# uri or uid in a play command's `skip_to`: 0.8.0 prefers the uri even when it is
-# empty, finds no match and starts the context from its first track. Drop this once
-# a librespot release newer than 0.8.0 carries the fixes.
+# uri or uid in a play command's `skip_to`, the fix from upstream PR #1795
+# (https://github.com/librespot-org/librespot/pull/1795): 0.8.0 prefers the uri even
+# when it is empty, finds no match and starts the context from its first track. Drop
+# this once a librespot release newer than 0.8.0 carries the fixes.
 librespot-connect ={ path = "vendor/librespot-connect" }
 
 
